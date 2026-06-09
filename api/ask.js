@@ -1,51 +1,32 @@
-// /api/ask.js — Serverless function for the Nevada Notary Encyclopedia
-// Keeps your Anthropic API key secret on the server-side
-
+// /api/ask.js — Streaming version
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+  if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
 
   const { messages } = req.body || {};
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
-    res.status(400).json({ error: 'Missing messages' });
-    return;
+    res.status(400).json({ error: 'Missing messages' }); return;
   }
 
   const SYSTEM_PROMPT = `You are the Nevada Notary Encyclopedia, an expert AI reference tool built by Melanie B Notary for working notaries. You specialize exclusively in Nevada notary law, practice, and procedure.
 
-Your knowledge covers:
-- NRS Chapter 240 (Nevada Notaries Public) and NRS Chapter 240A (Electronic Notarization)
-- Remote Online Notarization (RON) requirements under Nevada law
-- Notarial acts: acknowledgments, jurats, oaths/affirmations, copy certifications, signature witnessing
-- Acceptable identification for signers
-- Journal and record-keeping requirements
-- Notary fees under NRS 240.100 ($15 per acknowledgment/jurat per signer, $7.50 each additional signature by same signer, $7.50 oaths, RON up to $25)
-- Prohibited acts and grounds for refusal
-- Loan signing agent practices
-- Seal and stamp requirements
-- Certificate wording and loose certificates
-- Common document types: deeds, powers of attorney, trusts, wills, affidavits, loan packages, DMV forms
-- Errors, liability, and best practices
-- Nevada Secretary of State processes
+Your knowledge covers NRS Chapter 240, NRS Chapter 240A (Electronic Notarization), Remote Online Notarization, notarial acts (acknowledgments, jurats, oaths/affirmations, copy certifications, signature witnessing), acceptable ID, journal requirements, fees under NRS 240.100 ($15 acknowledgment/jurat, $7.50 additional, $7.50 oaths, RON up to $25), prohibited acts, loan signing, seal/stamp rules, certificate wording, and common document types.
 
 When answering:
-- Cite the specific NRS or source when applicable (e.g., NRS 240.060)
-- Be clear, practical, and thorough — notaries rely on this for live signings
-- For gray areas, advise contacting the Nevada Secretary of State at (775) 684-5708
-- Never provide legal advice for specific legal disputes; recommend an attorney when appropriate
-- Format your answer using these EXACT section headers when relevant: "## ANSWER" for the main answer, "## KEY POINTS" for bullet points of essentials, "## NRS REFERENCES" for citations, "## FOLLOW-UP QUESTIONS" for 2-3 related questions
-- Use **bold** for key terms and bullet points (-) for lists`;
+- Cite the specific NRS when applicable (e.g., NRS 240.060)
+- Be clear, practical, thorough — notaries rely on this for live signings
+- For gray areas, advise contacting Nevada SOS at (775) 684-5708
+- Never give legal advice for disputes; recommend an attorney
+- Format with these EXACT headers when relevant: "## ANSWER", "## KEY POINTS", "## NRS REFERENCES", "## FOLLOW-UP QUESTIONS"
+- Use **bold** for key terms, bullet points (-) for lists`;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -60,26 +41,41 @@ When answering:
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
         messages: messages,
+        stream: true,
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error('Anthropic API error:', response.status, errText);
-      res.status(500).json({ error: `API error: ${response.status}` });
+      res.write(`data: ${JSON.stringify({ error: `API error: ${response.status}` })}\n\n`);
+      res.end();
       return;
     }
 
-    const data = await response.json();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
 
-    const answer = (data.content || [])
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n\n');
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'content_block_delta' && data.delta?.text) {
+              res.write(`data: ${JSON.stringify({ text: data.delta.text })}\n\n`);
+            }
+          } catch {}
+        }
+      }
+    }
 
-    res.status(200).json({ answer: answer || 'No response generated.' });
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.end();
   } catch (err) {
-    console.error('Handler error:', err);
-    res.status(500).json({ error: 'Server error: ' + err.message });
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
   }
 }
