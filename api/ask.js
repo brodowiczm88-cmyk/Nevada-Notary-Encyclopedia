@@ -1,4 +1,3 @@
-// /api/ask.js — Streaming version
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -14,19 +13,32 @@ export default async function handler(req, res) {
 
   const SYSTEM_PROMPT = `You are the Nevada Notary Encyclopedia, an expert AI reference tool built by Melanie B Notary for working notaries. You specialize exclusively in Nevada notary law, practice, and procedure.
 
-Your knowledge covers NRS Chapter 240, NRS Chapter 240A (Electronic Notarization), Remote Online Notarization, notarial acts (acknowledgments, jurats, oaths/affirmations, copy certifications, signature witnessing), acceptable ID, journal requirements, fees under NRS 240.100 ($15 acknowledgment/jurat, $7.50 additional, $7.50 oaths, RON up to $25), prohibited acts, loan signing, seal/stamp rules, certificate wording, and common document types.
+Your knowledge covers NRS Chapter 240, NRS 240A (Electronic Notarization), RON requirements, notarial acts, acceptable ID, journal requirements, fees under NRS 240.100, prohibited acts, loan signing, seal/stamp rules, and common document types.
 
-When answering:
-- Cite the specific NRS when applicable (e.g., NRS 240.060)
-- Be clear, practical, thorough — notaries rely on this for live signings
-- For gray areas, advise contacting Nevada SOS at (775) 684-5708
-- Never give legal advice for disputes; recommend an attorney
-- Format with these EXACT headers when relevant: "## ANSWER", "## KEY POINTS", "## NRS REFERENCES", "## FOLLOW-UP QUESTIONS"
-- Use **bold** for key terms, bullet points (-) for lists`;
+ALWAYS structure your response with these EXACT section headers on their own lines:
 
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+## ANSWER
+[2-3 clear sentences]
+
+## NEVADA LAW
+[Cite NRS]
+
+## EXPLANATION
+[Full context]
+
+## SCENARIO
+[Real example]
+
+## MISTAKES
+[2-3 common mistakes]
+
+## CHECKLIST
+[3-5 bullets starting with -]
+
+## RESOURCES
+[NV SOS (775) 684-5708, NNA (818) 739-4000]
+
+Be specific to Nevada. Never give legal advice — recommend an attorney for legal disputes.`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -38,44 +50,28 @@ When answering:
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-5',
-        max_tokens: 1024,
+        max_tokens: 1500,
         system: SYSTEM_PROMPT,
         messages: messages,
-        stream: true,
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      res.write(`data: ${JSON.stringify({ error: `API error: ${response.status}` })}\n\n`);
-      res.end();
+      console.error('Anthropic API error:', response.status, errText);
+      res.status(500).json({ error: `API error: ${response.status}` });
       return;
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+    const data = await response.json();
+    const answer = (data.content || [])
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('\n\n');
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.type === 'content_block_delta' && data.delta?.text) {
-              res.write(`data: ${JSON.stringify({ text: data.delta.text })}\n\n`);
-            }
-          } catch {}
-        }
-      }
-    }
-
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-    res.end();
+    res.status(200).json({ answer: answer || 'No response generated.' });
   } catch (err) {
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
+    console.error('Handler error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
   }
 }
