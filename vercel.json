@@ -4,7 +4,7 @@
   "outputDirectory": null,
   "framework": null,
   "functions": {
-    "api/ask.mjs": {
+    "api/ask.js": {
       "maxDuration": 30
     }
   },
